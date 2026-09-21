@@ -51,4 +51,18 @@ def write_report(tool: str, sections: List[Section], outdir: str = "", note: str
     with open(os.path.join(base, "report.json"), "w", encoding="utf-8") as f:
         json.dump({"tool": tool, "version": __version__, "overall": overall(sections),
                    "sections": [asdict(s) for s in sections]}, f, indent=2, ensure_ascii=False)
+    _give_to_sudo_user(base)
     return base
+
+
+def _give_to_sudo_user(path: str) -> None:
+    """Reports written via sudo should belong to the invoking user, not root."""
+    uid, gid = os.environ.get("SUDO_UID"), os.environ.get("SUDO_GID")
+    if not (uid and gid and hasattr(os, "chown")):
+        return
+    try:
+        for root, dirs, files in os.walk(path):
+            for n in [root] + [os.path.join(root, x) for x in dirs + files]:
+                os.chown(n, int(uid), int(gid))
+    except OSError:
+        pass

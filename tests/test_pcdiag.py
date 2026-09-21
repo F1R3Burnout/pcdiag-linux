@@ -51,8 +51,12 @@ class Parsers(unittest.TestCase):
         self.assertEqual(stability.parse_smart(ok).status, PASS)
         bad = dict(ok, smart_status={"passed": False})
         self.assertEqual(stability.parse_smart(bad).status, FAIL)
-        realloc = {**ok, "ata_smart_attributes": {"table": [{"id": 5, "name": "R", "raw": {"value": 8}}]}}
-        self.assertEqual(stability.parse_smart(realloc).status, FAIL)
+        few = {**ok, "ata_smart_attributes": {"table": [{"id": 5, "name": "R", "raw": {"value": 1}}]}}
+        self.assertEqual(stability.parse_smart(few).status, ATTENTION)
+        many = {**ok, "ata_smart_attributes": {"table": [{"id": 5, "name": "R", "raw": {"value": 40}}]}}
+        self.assertEqual(stability.parse_smart(many).status, FAIL)
+        unc = {**ok, "ata_smart_attributes": {"table": [{"id": 198, "name": "U", "raw": {"value": 1}}]}}
+        self.assertEqual(stability.parse_smart(unc).status, FAIL)
         self.assertEqual(stability.parse_smart({"device": {"name": "x"}}).status, UNSUPPORTED)
 
     def test_kernel_diff(self):

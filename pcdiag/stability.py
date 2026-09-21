@@ -170,9 +170,13 @@ def parse_smart(js: dict) -> Section:
             s.add(ATTENTION, f"NVMe Temperatur {nv['temperature']} °C")
     for a in js.get("ata_smart_attributes", {}).get("table", []):
         raw = a.get("raw", {}).get("value", 0)
+        # A handful of reallocated sectors is common on aged drives and stable for years; a growing
+        # count or any offline-uncorrectable sector is the real warning sign.
         if a["id"] in (5, 197, 198) and raw > 0:
-            s.add(FAIL if a["id"] != 197 else ATTENTION, f"{a['name']} = {raw}",
-                  "Reallokierte/ausstehende Sektoren: Backup prüfen.")
+            hard = a["id"] == 198 or (a["id"] == 5 and raw >= 10)
+            s.add(FAIL if hard else ATTENTION, f"{a['name']} = {raw}",
+                  "Sektoren wurden ersetzt/sind auffällig: Backup prüfen und den Wert beobachten "
+                  "(steigt er zwischen Läufen, Datenträger ersetzen).")
         if a["id"] == 199 and raw > 0:
             s.add(ATTENTION, f"UDMA_CRC_Error_Count = {raw}", "Meist Kabel-/Steckerproblem, nicht Datenträger.")
     return s
