@@ -15,7 +15,9 @@ main() {
   command -v python3 >/dev/null || { echo "python3 wird benötigt (Arch/CachyOS: sudo pacman -S python)" >&2; exit 1; }
 
   echo "[pcdiag] Lade $REPO ($BRANCH) ..."
-  rm -rf "$DEST"
+  # Earlier sudo runs may have left root-owned files behind; never leave bytecode there again.
+  export PYTHONDONTWRITEBYTECODE=1
+  rm -rf "$DEST" 2>/dev/null || sudo rm -rf "$DEST"
   mkdir -p "$DEST"
   local URL="https://codeload.github.com/$REPO/tar.gz/refs/heads/$BRANCH"
   # Timeouts + IPv4 fallback: a stalled connection must fail loudly instead of hanging silently.
