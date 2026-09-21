@@ -5,6 +5,7 @@ import platform
 import re
 from typing import List
 
+from . import distro
 from .common import (ATTENTION, FAIL, PASS, UNSUPPORTED, Section, have, is_root,
                      read, run)
 
@@ -35,7 +36,9 @@ def collect() -> List[Section]:
     osname = read("/etc/os-release").split("\n")[0]
     s.data = {"kernel": platform.release(), "machine": platform.machine(), "os": osname,
               "uptime_s": read("/proc/uptime").split(" ")[0]}
-    s.add(PASS, f"{platform.node()} · {platform.release()}", osname)
+    d = distro.detect()
+    s.data["distro"] = d.label
+    s.add(PASS, f"{platform.node()} · {platform.release()}", f"{d.label} (Paketfamilie: {d.family})")
     if not is_root():
         s.add(ATTENTION, "Nicht als root gestartet",
               "dmesg/SMART/DMI sind ohne root eingeschränkt (sudo verwenden).")

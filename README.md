@@ -29,6 +29,7 @@ Prinzip wie unter Windows: bekannte Daten bzw. Berechnungen laufen durch die Har
 
 * **CPU** - SHA-256-Ketten auf allen Threads gegen Referenzwert, jede Abweichung ist ein Fehler.
 * **RAM** - Stuck-Bit-Muster (00/FF/AA/55) plus Zufallsdaten mit Seed, Rücklesen und Vergleich; zusätzlich `memtester`, falls installiert.
+* **GPU/VRAM** - `memtest_vulkan` (Vulkan-Compute-Shader schreiben Muster in den VRAM, lesen zurück, vergleichen). Das Werkzeug wird beim ersten Lauf von GitHub geladen, per gepinntem SHA-256 verifiziert und unter `~/.cache/pcdiag/tools` abgelegt (`--no-download` verhindert das). Ohne echten Vulkan-Treiber (nur llvmpipe) meldet der Test `UNSUPPORTED` und nennt den passenden Treiber für deine Distro.
 * **Storage** - SMART über `smartctl` (SATA + NVMe), Schreib-/Rücklese-Verifikation mit fsync in einer normalen Testdatei, optionaler Oberflächen-Lesetest (nur `O_RDONLY`, kein Schreibpfad auf Blockgeräte - per Test abgesichert).
 * **Thermal Guard** - hwmon/thermal_zone, Warnung ab 90 °C, Abbruch ab 97 °C.
 * **Kernel-Korrelation** - neue MCE-/EDAC-/AER-/GPU-/NVMe-Meldungen während des Laufs machen den Lauf zu FAIL.
@@ -36,7 +37,19 @@ Prinzip wie unter Windows: bekannte Daten bzw. Berechnungen laufen durch die Har
 
 Profile: `quick` (~1-2 min), `standard`, `extended`. Optionen: `--components cpu,memory,storage,kernel`, `--workdir`, `--dry-run`.
 
-Optional installieren für mehr Abdeckung: `smartmontools`, `memtester`, `pciutils`, `ethtool`, `iw`, `alsa-utils`. Arch/CachyOS: `sudo pacman -S smartmontools memtester pciutils ethtool iw alsa-utils`.
+## Distro-Erkennung
+
+Das Tool liest `/etc/os-release` (`ID` und `ID_LIKE`) und ordnet die Distro einer Paketfamilie zu:
+
+| Familie | Beispiele | Installation |
+|---|---|---|
+| arch | Arch, CachyOS, Manjaro, EndeavourOS | `pacman -S --needed` |
+| debian | Debian, Ubuntu, Linux Mint, Pop!_OS | `apt-get install -y` |
+| rhel | Fedora, Nobara, RHEL, Rocky, Alma | `dnf install -y` |
+| suse | openSUSE, SLES | `zypper install` |
+
+Fehlen optionale Helfer (`smartmontools`, `memtester`, `pciutils`, `ethtool`, `iw`, `alsa-utils`, `vulkan-tools`), fragt das Tool vor dem Lauf, ob es sie installieren soll (`--yes` ohne Rückfrage, `--no-install` gar nicht). Unveränderliche Systeme (SteamOS, Silverblue, Bazzite) werden nie angefasst, dort gibt es nur den Hinweis. Unter Mint und Debian prüft der Stabilitätstest zusätzlich, ob das systemd-Journal persistent ist, weil sonst nach einem Reset das Log des Vor-Boots fehlt.
+
 
 ## Tests
 
@@ -48,5 +61,5 @@ CI läuft auf Ubuntu (Python 3.9 und 3.12) inklusive echtem Quick-Lauf.
 
 ## Bekannte Grenzen
 
-* Keine GPU-Compute-/VRAM-Tests (unter Windows via D3D11/memtest_vulkan); kommt bei Bedarf über Vulkan-Tools nach.
+* Der GPU-Test nutzt `memtest_vulkan` (x86_64; auf ARM nur, wenn es systemweit installiert ist) und testet das von Vulkan gewählte Standardgerät. Es gibt keinen separaten D3D11-artigen Compute-Rechentest wie unter Windows.
 * Der Python-RAM-Test deckt nur einen Teil des RAM ab (Linux-Userspace, kein physischer Zugriff). Für ganzen RAM: MemTest86+ vom Boot-Stick.

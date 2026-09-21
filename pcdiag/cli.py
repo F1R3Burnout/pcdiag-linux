@@ -3,14 +3,14 @@ import argparse
 import sys
 from typing import List
 
-from . import __version__, displaydiag, netdiag, report, stability, sysdiag
+from . import __version__, displaydiag, distro, netdiag, report, stability, sysdiag
 from .common import FAIL, PASS, Section, overall
 
 TOOLS = {
     "sysdiag": ("Systemübersicht (CPU, RAM, Datenträger, Dienste, Kernel-Log)", None),
     "netdiag": ("Netzwerkdiagnose (Gateway, DNS, Link, WLAN)", None),
     "displaydiag": ("Display-/HDMI-Diagnose (DRM, EDID, Audio)", None),
-    "stability": ("Hardware-Stabilitätstest (CPU, RAM, Storage, Thermik, Kernel-Fehler)", None),
+    "stability": ("Hardware-Stabilitätstest (CPU, RAM, GPU/VRAM, Storage, Thermik, Kernel-Fehler)", None),
 }
 
 
@@ -23,6 +23,10 @@ def _print(sections: List[Section]) -> None:
 
 
 def run_tool(name: str, a: argparse.Namespace) -> int:
+    d = distro.detect()
+    print(f"System: {d.label}")
+    if not a.dry_run:
+        distro.ensure_dependencies(name, assume_yes=a.yes, allow_install=not a.no_install)
     if name == "sysdiag":
         secs, note = sysdiag.collect(), ""
     elif name == "netdiag":
@@ -31,7 +35,7 @@ def run_tool(name: str, a: argparse.Namespace) -> int:
         secs, note = displaydiag.collect(), ""
     else:
         comps = a.components.split(",") if a.components else None
-        secs = stability.run_stability(a.profile, comps, a.workdir, a.dry_run)
+        secs = stability.run_stability(a.profile, comps, a.workdir, a.dry_run, not a.no_download)
         note = ("PASS bedeutet: keine Fehler im getesteten Bereich - keine Garantie für gesunde Hardware. "
                 "Ein SYSTEM_RESET oder Hardware-Fehler im Kernel-Log ist ein Indiz, kein Beweis für eine bestimmte Komponente.")
     _print(secs)
@@ -44,10 +48,13 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="pcdiag", description="PC-Diagnose für Linux")
     p.add_argument("tool", nargs="?", choices=list(TOOLS), help="ohne Angabe: interaktives Menü")
     p.add_argument("--profile", choices=list(stability.PROFILES), default="quick")
-    p.add_argument("--components", help="stability: cpu,memory,storage,kernel")
+    p.add_argument("--components", help="stability: cpu,memory,gpu,storage,kernel")
     p.add_argument("--workdir", default="", help="stability: Verzeichnis für den Schreib-/Lesetest")
     p.add_argument("--output", default="", help="Zielordner für den Report")
     p.add_argument("--dry-run", action="store_true", help="stability: nur anzeigen, keine Last")
+    p.add_argument("--yes", "-y", action="store_true", help="fehlende Pakete ohne Rückfrage installieren")
+    p.add_argument("--no-install", action="store_true", help="keine Pakete installieren")
+    p.add_argument("--no-download", action="store_true", help="keine Werkzeuge herunterladen (memtest_vulkan)")
     p.add_argument("--version", action="version", version=__version__)
     a = p.parse_args(argv)
     if a.tool:

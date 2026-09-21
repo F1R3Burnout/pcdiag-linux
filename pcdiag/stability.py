@@ -19,15 +19,16 @@ import threading
 import time
 from typing import Callable, Dict, List, Optional
 
+from . import gpu as gpu_mod
 from .common import (ATTENTION, FAIL, INTERRUPTED, PASS, SKIPPED, UNSUPPORTED, Section,
                      have, is_root, read, run)
 
 PROFILES: Dict[str, dict] = {
-    "quick":    {"cpu_s": 45,   "ram_mib": 256,  "wv_mib": 64,   "surface_mib": 0},
-    "standard": {"cpu_s": 600,  "ram_mib": 1024, "wv_mib": 512,  "surface_mib": 4096},
-    "extended": {"cpu_s": 3600, "ram_mib": 4096, "wv_mib": 2048, "surface_mib": 0},  # 0 = whole disk
+    "quick":    {"cpu_s": 45,   "gpu_s": 60,   "ram_mib": 256,  "wv_mib": 64,   "surface_mib": 0},
+    "standard": {"cpu_s": 600,  "gpu_s": 300,  "ram_mib": 1024, "wv_mib": 512,  "surface_mib": 4096},
+    "extended": {"cpu_s": 3600, "gpu_s": 1200, "ram_mib": 4096, "wv_mib": 2048, "surface_mib": 0},  # 0 = whole disk
 }
-COMPONENTS = ["cpu", "memory", "storage", "kernel"]
+COMPONENTS = ["cpu", "memory", "gpu", "storage", "kernel"]
 THERMAL_WARN_C, THERMAL_ABORT_C = 90.0, 97.0
 
 
@@ -395,7 +396,7 @@ def set_pending(stage: Optional[str]) -> None:
 
 # ---------------------------------------------------------------- orchestration
 def run_stability(profile: str = "quick", components: Optional[List[str]] = None,
-                  directory: str = "", dry_run: bool = False,
+                  directory: str = "", dry_run: bool = False, allow_download: bool = True,
                   log: Callable[[str], None] = print) -> List[Section]:
     cfg = PROFILES[profile]
     comps = components or COMPONENTS
@@ -418,6 +419,10 @@ def run_stability(profile: str = "quick", components: Optional[List[str]] = None
     inv.add(PASS if is_root() else ATTENTION, "root" if is_root() else "Ohne root: SMART und Roh-Lesetest entfallen")
     inv.add(PASS if guard.available else ATTENTION,
             "Temperatursensoren gefunden" if guard.available else "Keine Temperatursensoren - Thermal-Guard inaktiv")
+    if not os.path.isdir("/var/log/journal"):
+        inv.add(ATTENTION, "systemd-Journal ist nicht persistent",
+                "Nach einem Reset fehlt das Log des Vor-Boots. Aktivieren: sudo mkdir -p /var/log/journal && "
+                "sudo systemctl restart systemd-journald")
     secs.append(inv)
     try:
         if "cpu" in comps and not stop_evt.is_set():
@@ -426,6 +431,9 @@ def run_stability(profile: str = "quick", components: Optional[List[str]] = None
         if "memory" in comps and not stop_evt.is_set():
             log("RAM-Test ..."); set_pending("RAM")
             secs.append(memory_test(cfg["ram_mib"], stop_evt))
+        if "gpu" in comps and not stop_evt.is_set():
+            log("GPU-/VRAM-Test ..."); set_pending("GPU")
+            secs.append(gpu_mod.gpu_test(cfg["gpu_s"], stop_evt, allow_download, log))
         if "storage" in comps and not stop_evt.is_set():
             log("Storage-Tests ..."); set_pending("STORAGE")
             secs.extend(smart_test())
