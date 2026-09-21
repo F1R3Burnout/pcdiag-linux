@@ -16,8 +16,11 @@ if command -v curl >/dev/null; then curl -fsSL "$URL" | tar -xz -C "$DEST" --str
 else wget -qO- "$URL" | tar -xz -C "$DEST" --strip-components=1; fi
 
 cd "$DEST"
-if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null && [ -t 0 -o -t 1 ]; then
+# When piped from curl, stdin is the script pipe: attach the menu to the terminal instead.
+if [ ! -t 0 ] && [ -r /dev/tty ]; then exec </dev/tty; fi
+
+if [ "$(id -u)" -ne 0 ] && [ -z "${PCDIAG_NO_SUDO:-}" ] && command -v sudo >/dev/null; then
   echo "Starte mit sudo für vollen Zugriff (SMART, dmesg, Roh-Lesetest). Ohne root: PCDIAG_NO_SUDO=1"
-  [ -z "${PCDIAG_NO_SUDO:-}" ] && exec sudo -E python3 -m pcdiag "$@"
+  exec sudo -E python3 -m pcdiag "$@"
 fi
 exec python3 -m pcdiag "$@"
