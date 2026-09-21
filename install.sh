@@ -28,7 +28,7 @@ echo "[pcdiag] Download fertig."
 
 cd "$DEST"
 # When piped from curl, stdin is the script pipe: attach the menu to the terminal instead.
-if [ ! -t 0 ] && [ -r /dev/tty ]; then exec </dev/tty; fi
+if [ ! -t 0 ] && (: </dev/tty) 2>/dev/null; then exec </dev/tty; fi
 
 if [ "$(id -u)" -ne 0 ] && [ -z "${PCDIAG_NO_SUDO:-}" ] && command -v sudo >/dev/null; then
   echo "[pcdiag] Starte mit sudo für vollen Zugriff (SMART, Kernel-Log, Roh-Lesetest)."
