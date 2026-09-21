@@ -75,6 +75,18 @@ class Gpu(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     gpu.safe_extract_member(arc, bad, d)
 
+    @unittest.skipIf(sys.platform == "win32", "process groups are POSIX-only")
+    def test_stop_group_kills_orphan_children(self):
+        import subprocess
+        import time
+        p = subprocess.Popen(["sh", "-c", "sleep 300 & echo $!; wait"], stdout=subprocess.PIPE,
+                             text=True, start_new_session=True)
+        child = int(p.stdout.readline())
+        gpu._stop_group(p)
+        time.sleep(0.5)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(child, 0)
+
     def test_pinned_hash_shape(self):
         self.assertRegex(gpu.TOOL["sha256"], r"^[0-9a-f]{64}$")
         self.assertTrue(gpu.TOOL["url"].startswith("https://github.com/GpuZelenograd/"))

@@ -130,6 +130,30 @@ def evaluate_output(text: str, completed_ok: bool) -> Section:
     return s
 
 
+def _stop_group(p: "subprocess.Popen") -> None:
+    """memtest_vulkan re-spawns a worker child; signalling only the parent leaves it running at full
+    GPU load. It runs in its own session, so stop the whole process group: SIGINT, then TERM, then KILL."""
+    for sig, wait in ((signal.SIGINT, 8), (signal.SIGTERM, 5), (signal.SIGKILL, 5)):
+        try:
+            os.killpg(p.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            p.wait(wait)
+        except subprocess.TimeoutExpired:
+            continue
+        # parent gone; make sure no group member survived either
+        try:
+            os.killpg(p.pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(1)
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 def gpu_test(seconds: int, stop_evt: threading.Event, allow_download: bool = True, log=print) -> Section:
     if platform.machine() not in ("x86_64", "aarch64"):
         s = Section("GPU Compute & VRAM (Vulkan)")
@@ -148,18 +172,13 @@ def gpu_test(seconds: int, stop_evt: threading.Event, allow_download: bool = Tru
         return s
     lines: List[str] = []
     p = subprocess.Popen([exe], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                         text=True, errors="replace")
+                         text=True, errors="replace", start_new_session=True)
     threading.Thread(target=lambda: [lines.append(l) for l in p.stdout], daemon=True).start()
     end = time.time() + seconds
     while time.time() < end and not stop_evt.is_set() and p.poll() is None:
         time.sleep(0.5)
     early_exit = p.poll() is not None
-    if not early_exit:
-        p.send_signal(signal.SIGINT)              # memtest_vulkan runs until interrupted
-        try:
-            p.wait(10)
-        except subprocess.TimeoutExpired:
-            p.kill()
+    _stop_group(p)
     time.sleep(0.3)
     s = evaluate_output("".join(lines), not early_exit)
     s.data = {"devices": names, "tool": note}
