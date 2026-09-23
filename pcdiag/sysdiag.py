@@ -5,7 +5,7 @@ import platform
 import re
 from typing import List
 
-from . import distro
+from . import distro, remote_desktop
 from .common import (ATTENTION, FAIL, PASS, UNSUPPORTED, Section, have, is_root,
                      read, run)
 
@@ -97,6 +97,8 @@ def collect() -> List[Section]:
         s.add(PASS, "Keine auffälligen Kernel-Meldungen (dieser Boot)")
     s.raw = "\n".join(bad[:200])
     secs.append(s)
+
+    secs.append(remote_desktop.check())
 
     s = Section("GPU & PCI")
     rc, out = run(["lspci", "-nn"]) if have("lspci") else (127, "")

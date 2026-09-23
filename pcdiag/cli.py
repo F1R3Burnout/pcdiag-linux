@@ -55,8 +55,14 @@ def main(argv=None) -> int:
     p.add_argument("--yes", "-y", action="store_true", help="fehlende Pakete ohne Rückfrage installieren")
     p.add_argument("--no-install", action="store_true", help="keine Pakete installieren")
     p.add_argument("--no-download", action="store_true", help="keine Werkzeuge herunterladen (memtest_vulkan)")
+    p.add_argument("--fix-xrdp-polkit", action="store_true",
+                   help="PolicyKit-Regel anlegen, damit NetworkManager in xrdp-Sitzungen nicht ständig "
+                        "nach dem Passwort fragt")
     p.add_argument("--version", action="version", version=__version__)
     a = p.parse_args(argv)
+    if a.fix_xrdp_polkit:
+        from . import remote_desktop
+        return 0 if remote_desktop.apply_fix(assume_yes=a.yes) else 1
     if a.tool:
         return run_tool(a.tool, a)
     names = list(TOOLS)

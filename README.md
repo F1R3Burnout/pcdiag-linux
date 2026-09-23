@@ -43,6 +43,25 @@ Prinzip wie unter Windows: bekannte Daten bzw. Berechnungen laufen durch die Har
 
 Profile: `quick` (~1-2 min), `standard`, `extended`. Optionen: `--components cpu,memory,storage,kernel`, `--workdir`, `--dry-run`.
 
+## xrdp & PolicyKit
+
+`sysdiag` erkennt, wenn `xrdp` installiert ist, aber keine PolicyKit-Regel für passwortlose
+NetworkManager-Aktionen existiert. Das ist relevant, weil xrdp-Sitzungen bei `systemd-logind`
+nicht als "aktiv" gelten - PolicyKits eingebaute NetworkManager-Richtlinie (die den aktiv
+angemeldeten Nutzer sonst ohne Nachfrage durchlässt) greift dann nicht, und jede
+NetworkManager-Aktion (z. B. WLAN verbinden) fragt bei jedem Mal erneut nach dem Passwort,
+auch für den Besitzer des Rechners.
+
+Beheben:
+
+```bash
+sudo python3 -m pcdiag sysdiag --fix-xrdp-polkit
+```
+
+Das legt `/etc/polkit-1/rules.d/49-nopasswd-networkmanager.rules` an, die genau dem Benutzer,
+der das Tool aufgerufen hat (`$SUDO_USER`, nicht `root`), passwortlose NetworkManager-Aktionen
+erlaubt, und startet `polkit` neu. Fragt vorher nach Bestätigung (`--yes` überspringt das).
+
 ## Distro-Erkennung
 
 Das Tool liest `/etc/os-release` (`ID` und `ID_LIKE`) und ordnet die Distro einer Paketfamilie zu:
