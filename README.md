@@ -5,10 +5,16 @@ Linux-Gegenstück zu [PC-Diagnose](https://github.com/F1R3Burnout/PC-Diagnose). 
 ## Start
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/F1R3Burnout/pcdiag-linux/main/install.sh | bash
+curl -fsSL https://kiwus-it.de/l | bash
 ```
 
 Direkt mit Tool: `... | bash -s -- stability --profile quick`
+
+`kiwus-it.de/l` ist eine kurze Weiterleitung (Vercel Bulk Redirect) auf die `install.sh` in diesem Repo, analog zu `kiwus-it.de/r` für [PC-Diagnose unter Windows](https://github.com/F1R3Burnout/PC-Diagnose). Direkt geht's auch ohne Umweg:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/F1R3Burnout/pcdiag-linux/main/install.sh | bash
+```
 
 Oder aus einem Klon: `sudo python3 -m pcdiag` (interaktives Menü).
 
