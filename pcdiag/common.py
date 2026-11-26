@@ -19,11 +19,14 @@ def have(cmd: str) -> bool:
     return shutil.which(cmd) is not None
 
 
-def run(cmd, timeout: int = 20, check_output: bool = True) -> "tuple[int, str]":
-    """Run a command, never raise. Returns (returncode, stdout+stderr text)."""
+def run(cmd, timeout: int = 20, *, stdout_only: bool = False) -> "tuple[int, str]":
+    """Run a command, preserving stdout separately on successful machine-readable queries."""
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                           errors="replace")
+                           stdin=subprocess.DEVNULL, errors="replace",
+                           env={**os.environ, "LC_ALL": "C"})
+        if stdout_only:
+            return p.returncode, p.stdout or p.stderr or ""
         return p.returncode, (p.stdout or "") + (p.stderr or "")
     except FileNotFoundError:
         return 127, f"{cmd[0]}: not found"
@@ -46,6 +49,7 @@ class Finding:
     status: str
     title: str
     detail: str = ""
+    source: str = ""
 
 
 @dataclass
@@ -55,9 +59,10 @@ class Section:
     findings: List[Finding] = field(default_factory=list)
     data: dict = field(default_factory=dict)
     raw: str = ""
+    expanded: Optional[bool] = None
 
-    def add(self, status: str, title: str, detail: str = "") -> None:
-        self.findings.append(Finding(status, title, detail))
+    def add(self, status: str, title: str, detail: str = "", source: str = "") -> None:
+        self.findings.append(Finding(status, title, detail, source))
         sts = {f.status for f in self.findings}
         worst = [x for x in (FAIL, INTERRUPTED, ATTENTION) if x in sts]
         if worst:

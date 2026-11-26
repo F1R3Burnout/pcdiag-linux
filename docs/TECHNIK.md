@@ -10,11 +10,18 @@ Prinzip wie unter Windows: bekannte Daten bzw. Berechnungen laufen durch die Har
 * **RAM** - Stuck-Bit-Muster (00/FF/AA/55) plus Zufallsdaten mit Seed, Rücklesen und Vergleich; zusätzlich `memtester`, falls installiert.
 * **GPU/VRAM** - `memtest_vulkan` (Vulkan-Compute-Shader schreiben Muster in den VRAM, lesen zurück, vergleichen). Das Werkzeug wird beim ersten Lauf von GitHub geladen, per gepinntem SHA-256 verifiziert und unter `~/.cache/pcdiag/tools` abgelegt (`--no-download` verhindert das). Ohne echten Vulkan-Treiber (nur llvmpipe) meldet der Test `UNSUPPORTED` und nennt den passenden Treiber für deine Distro.
 * **Storage** - SMART über `smartctl` (SATA + NVMe), Schreib-/Rücklese-Verifikation mit fsync in einer normalen Testdatei, optionaler Oberflächen-Lesetest (nur `O_RDONLY`, kein Schreibpfad auf Blockgeräte - per Test abgesichert).
-* **Thermal Guard** - hwmon/thermal_zone, Warnung ab 90 °C, Abbruch ab 97 °C.
-* **Kernel-Korrelation** - neue MCE-/EDAC-/AER-/GPU-/NVMe-Meldungen während des Laufs machen den Lauf zu FAIL.
-* **Reset-Erkennung** - vor jeder Stage wird ein Marker (mit `boot_id`) geschrieben. Findet der nächste Start einen Marker aus einem anderen Boot, meldet er `SYSTEM_RESET` (typisch bei Netzteil-/Spannungs-/Temperaturproblemen, aber kein Beweis).
+* **Thermal Guard** - hwmon/thermal_zone, je Sensor mit Herkunft und Maximalwert. Warnung ab 90 °C, Abbruch ab 97 °C. CPU-/GPU-Messwerte werden getrennt ausgewiesen; fehlende Werte bleiben sichtbar.
+* **Kernel-Korrelation** - neue bekannte Hardware-Fehlermuster werden mit dem Ausgangszustand verglichen. Ein nicht lesbares Journal ist kein erfolgreiches Ergebnis.
+* **Unterbrochene Läufe** - ein Marker mit `boot_id` dokumentiert die laufende Stufe. Ein Bootwechsel nach einem offenen Marker beweist nicht, dass der Neustart ungeplant war. Ist das Journal desselben Boots verfügbar, wird es zur Einordnung herangezogen.
 
-Profile: `quick` (~1-2 min), `standard`, `extended`. Optionen: `--components cpu,memory,storage,kernel`, `--workdir`, `--dry-run`.
+Profile: `quick`, `standard`, `extended`. Die tatsächliche Dauer hängt von Geräten und Hilfsprogrammen ab. `--load-seconds` begrenzt CPU, GPU und den optionalen memtester-Zusatzlauf, nicht alle Abfragen oder den internen RAM-Mustervergleich. `--dry-run` erzeugt keine Last und verändert keinen Marker.
+
+## Befundquellen und Grenzen
+
+- Das Systemprotokoll verwendet strukturierte [systemd-Journalfelder](https://www.freedesktop.org/software/systemd/man/latest/systemd.journal-fields.html) inklusive Boot-ID, Zeit, Quelle und Cursor. Ein protokollierter Shutdown-Beginn beweist nicht den vollständigen Abschluss; eine Lücke im Journal beweist keinen Stromausfall.
+- Anwendungsabstürze werden über [systemd-coredump](https://www.freedesktop.org/software/systemd/man/latest/systemd-coredump.html) gruppiert. Das Tool erfasst Metadaten, kopiert aber keine Prozessspeicher-Dumps und leitet ohne passenden Nachweis keine Ursache ab.
+- Der Netzwerkbericht trennt Tunnel vom Hauptnetz. VPNs ohne sichtbaren Tunneladapter können fehlen. Das Standardprofil prüft externe Ping-, DNS- und TCP-Ziele; `--lan-only` unterbindet diese. Optionaler Speedtest: Download, Upload, Ping und vom Client gemeldeter Server; Messwerte verschiedener Server sind nicht direkt vergleichbar.
+- Der Displaybericht unterscheidet vom Monitor angebotene EDID-Modi vom aktuellen Sitzungsmodus. EDID-HDR-Fähigkeit ist nicht gleich aktiviertem HDR. Ohne eine lesbare KDE-Wayland- oder X11-Sitzung gibt es keinen bestätigten aktiven Modus. `--compare` vergleicht zwei lokal erzeugte JSON-Berichte ohne Konfigurationsänderungen.
 
 ## xrdp & PolicyKit
 
@@ -46,7 +53,7 @@ Das Tool liest `/etc/os-release` (`ID` und `ID_LIKE`) und ordnet die Distro eine
 | rhel | Fedora, Nobara, RHEL, Rocky, Alma | `dnf install -y` |
 | suse | openSUSE, SLES | `zypper install` |
 
-Fehlen optionale Helfer (`smartmontools`, `memtester`, `pciutils`, `ethtool`, `iw`, `alsa-utils`, `vulkan-tools`), fragt das Tool vor dem Lauf, ob es sie installieren soll (`--yes` ohne Rückfrage, `--no-install` gar nicht). Unveränderliche Systeme (SteamOS, Silverblue, Bazzite) werden nie angefasst, dort gibt es nur den Hinweis. Unter Mint und Debian prüft der Stabilitätstest zusätzlich, ob das systemd-Journal persistent ist, weil sonst nach einem Reset das Log des Vor-Boots fehlt.
+Fehlen optionale Helfer (`smartmontools`, `memtester`, `pciutils`, `iw`, `alsa-utils`, `vulkan-tools`), fragt das Tool vor dem Lauf nach (`--yes` ohne Rückfrage, `--no-install` gar nicht). Installation ist mit Enter nicht voreingestellt. Unveränderliche Systeme (SteamOS, Silverblue, Bazzite) erhalten nur den Hinweis. Der Stabilitätstest weist darauf hin, wenn das Standardverzeichnis für ein persistentes Journal fehlt.
 
 
 ## Bekannte Grenzen

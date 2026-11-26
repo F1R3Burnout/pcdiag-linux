@@ -122,6 +122,9 @@ def evaluate_output(text: str, completed_ok: bool) -> Section:
     elif _INIT.search(text) and not _OK.search(text):
         line = next(l for l in text.splitlines() if _INIT.search(l))
         s.add(UNSUPPORTED, "Vulkan-Initialisierung fehlgeschlagen", line.strip()[:200])
+    elif _OK.search(text) and not completed_ok:
+        s.add(ATTENTION, "GPU-Test vor der geplanten Dauer beendet",
+              "Einzelne Durchläufe waren erfolgreich, der vorgesehene Lastzeitraum wurde nicht erreicht.")
     elif _OK.search(text):
         n = len(_OK.findall(text))
         s.add(PASS, f"{n} Verifikationsdurchläufe ohne Fehler", "Keine Fehler im getesteten VRAM-Bereich.")

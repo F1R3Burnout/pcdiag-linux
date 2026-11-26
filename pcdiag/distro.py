@@ -36,8 +36,8 @@ CMD_PACKAGES: Dict[str, str] = {
 PKG_OVERRIDES: Dict[str, Dict[str, str]] = {}   # {family: {generic_pkg: family_pkg}}
 
 TOOL_NEEDS = {
-    "sysdiag": ["lspci"],
-    "netdiag": ["ethtool", "iw"],
+    "sysdiag": ["lspci", "smartctl"],
+    "netdiag": ["iw"],
     "displaydiag": ["aplay"],
     "stability": ["smartctl", "memtester", "lspci", "vulkaninfo"],
 }
@@ -111,8 +111,12 @@ def detect() -> Distro:
 
 
 def missing_packages(distro: Distro, tool: Optional[str] = None,
-                     present=have) -> List[str]:
+                     present=have, components: Optional[List[str]] = None) -> List[str]:
     cmds = TOOL_NEEDS.get(tool, list(CMD_PACKAGES)) if tool else list(CMD_PACKAGES)
+    if tool == "stability" and components:
+        component_tools = {"storage": "smartctl", "memory": "memtester", "gpu": "vulkaninfo"}
+        needed = {component_tools[c] for c in components if c in component_tools}
+        cmds = [c for c in cmds if c in needed]
     pk = []
     for c in cmds:
         if not present(c):
@@ -134,10 +138,10 @@ def install_commands(distro: Distro, packages: List[str]) -> List[List[str]]:
 
 
 def ensure_dependencies(tool: str, assume_yes: bool = False, allow_install: bool = True,
-                        log=print, ask=input) -> List[str]:
+                        log=print, ask=input, components: Optional[List[str]] = None) -> List[str]:
     """Offer to install missing helper programs. Returns the packages still missing."""
     d = detect()
-    pk = missing_packages(d, tool)
+    pk = missing_packages(d, tool, components=components)
     if not pk:
         return []
     if not allow_install or d.family == "unknown":
@@ -157,7 +161,7 @@ def ensure_dependencies(tool: str, assume_yes: bool = False, allow_install: bool
             log("Keine interaktive Eingabe - mit --yes automatisch installieren oder manuell: "
                 + " ".join(prefix + cmds[-1]))
             return pk
-        if ask("Jetzt installieren? [J/n] ").strip().lower() not in ("", "j", "y", "ja", "yes"):
+        if ask("Jetzt installieren? [j/N] ").strip().lower() not in ("j", "y", "ja", "yes"):
             return pk
     for c in cmds:
         rc, out = run(prefix + c, timeout=900)
@@ -165,6 +169,6 @@ def ensure_dependencies(tool: str, assume_yes: bool = False, allow_install: bool
             log(f"Befehl fehlgeschlagen: {' '.join(c)}\n{out.strip()[-300:]}")
             if c is cmds[-1]:
                 break
-    still = missing_packages(d, tool)
+    still = missing_packages(d, tool, components=components)
     log("Installation abgeschlossen." if not still else f"Weiterhin fehlend: {' '.join(still)}")
     return still

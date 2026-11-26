@@ -36,6 +36,8 @@ class Distros(unittest.TestCase):
         pk = distro.missing_packages(d, "stability", present=lambda c: c == "lspci")
         self.assertEqual(pk, ["smartmontools", "memtester", "vulkan-tools"])
         self.assertEqual(distro.missing_packages(d, "netdiag", present=lambda c: True), [])
+        self.assertEqual(distro.missing_packages(d, "stability", present=lambda c: False,
+                                                 components=["gpu"]), ["vulkan-tools"])
 
     def test_no_install_returns_missing_without_running_anything(self):
         msgs = []
@@ -52,6 +54,7 @@ class Distros(unittest.TestCase):
 class Gpu(unittest.TestCase):
     def test_evaluate(self):
         self.assertEqual(gpu.evaluate_output("1 iteration. Passed  0.0031 seconds\n", True).status, PASS)
+        self.assertNotEqual(gpu.evaluate_output("1 iteration. Passed  0.0031 seconds\n", False).status, PASS)
         self.assertEqual(gpu.evaluate_output("Passed\nError found. 3 errors\n", True).status, FAIL)
         self.assertEqual(gpu.evaluate_output("ERROR_DEVICE_LOST", False).status, FAIL)
         self.assertEqual(gpu.evaluate_output("Failed to create instance", True).status, UNSUPPORTED)
@@ -81,7 +84,8 @@ class Gpu(unittest.TestCase):
         import time
         p = subprocess.Popen(["sh", "-c", "sleep 300 & echo $!; wait"], stdout=subprocess.PIPE,
                              text=True, start_new_session=True)
-        child = int(p.stdout.readline())
+        with p.stdout:
+            child = int(p.stdout.readline())
         gpu._stop_group(p)
         time.sleep(0.5)
         with self.assertRaises(ProcessLookupError):

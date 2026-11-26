@@ -90,7 +90,8 @@ class Stability(unittest.TestCase):
         self.assertEqual(stability._reference_chain(1, 100), stability._reference_chain(1, 100))
 
     def test_no_write_path_on_block_devices(self):
-        src = open(stability.__file__, encoding="utf-8").read()
+        with open(stability.__file__, encoding="utf-8") as f:
+            src = f.read()
         for token in ("O_WRONLY", "O_RDWR", "os.write("):
             self.assertNotIn(token, src)
         self.assertNotIn('open(device, "wb', src)
@@ -106,9 +107,11 @@ class Reporting(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             s = Section("A"); s.add(FAIL, "<b>bad</b>", "detail")
             out = report.write_report("t", [s], d)
-            html = open(os.path.join(out, "report.html"), encoding="utf-8").read()
+            with open(os.path.join(out, "report.html"), encoding="utf-8") as f:
+                html = f.read()
             self.assertIn("&lt;b&gt;bad", html)
-            self.assertEqual(json.load(open(os.path.join(out, "report.json")))["overall"], FAIL)
+            with open(os.path.join(out, "report.json"), encoding="utf-8") as f:
+                self.assertEqual(json.load(f)["overall"], FAIL)
 
 
 if __name__ == "__main__":

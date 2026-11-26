@@ -15,11 +15,13 @@ import os
 import random
 import re
 import signal
+import subprocess
+import tempfile
 import threading
 import time
 from typing import Callable, Dict, List, Optional
 
-from . import gpu as gpu_mod
+from . import events, gpu as gpu_mod
 from .common import (ATTENTION, FAIL, INTERRUPTED, PASS, SKIPPED, UNSUPPORTED, Section,
                      have, is_root, read, run)
 
@@ -30,6 +32,7 @@ PROFILES: Dict[str, dict] = {
 }
 COMPONENTS = ["cpu", "memory", "gpu", "storage", "kernel"]
 THERMAL_WARN_C, THERMAL_ABORT_C = 90.0, 97.0
+CPU_REFERENCE = "5d958a37f95d5d892ec9b9f969a86a34b844a4f8406384df26ff99732e3ed325"
 
 
 # ---------------------------------------------------------------- CPU
@@ -52,30 +55,31 @@ def _cpu_worker(seed: int, rounds: int, expected: str, stop, q) -> None:
 
 def cpu_test(seconds: int, stop_evt, threads: Optional[int] = None) -> Section:
     s = Section("CPU Compute")
-    n = threads or os.cpu_count() or 1
+    n = threads or (len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()) or 1
     rounds = 20000
-    expected = _reference_chain(1, rounds)   # computed once, on this core, before load
-    if _reference_chain(1, rounds) != expected:
-        s.add(FAIL, "Referenzberechnung ist nicht reproduzierbar", "Sehr starkes Indiz für instabile CPU/RAM.")
+    if _reference_chain(1, rounds) != CPU_REFERENCE:
+        s.add(FAIL, "Referenzberechnung weicht vom hinterlegten SHA-256-Sollwert ab")
         return s
     q, stop = mp.Queue(), mp.Event()
-    procs = [mp.Process(target=_cpu_worker, args=(1, rounds, expected, stop, q)) for _ in range(n)]
+    procs = [mp.Process(target=_cpu_worker, args=(1, rounds, CPU_REFERENCE, stop, q)) for _ in range(n)]
     for p in procs:
         p.start()
-    end = time.time() + seconds
-    while time.time() < end and not stop_evt.is_set():
+    end = time.monotonic() + seconds
+    while time.monotonic() < end and not stop_evt.is_set() and all(p.is_alive() for p in procs):
         time.sleep(0.5)
     stop.set()
     res = []
+    collect_deadline = time.monotonic() + 5
     for _ in procs:
         try:
-            res.append(q.get(timeout=30))
+            res.append(q.get(timeout=max(0.01, collect_deadline - time.monotonic())))
         except Exception:
             pass
     for p in procs:
         p.join(5)
         if p.is_alive():
             p.terminate()
+            p.join(1)
     loops, bad = sum(r[0] for r in res), sum(r[1] for r in res)
     if len(res) < n:
         s.add(FAIL, f"{n - len(res)} von {n} Worker-Prozessen ohne Ergebnis beendet",
@@ -83,7 +87,9 @@ def cpu_test(seconds: int, stop_evt, threads: Optional[int] = None) -> Section:
     if bad:
         s.add(FAIL, f"{bad} falsche Ergebnisse bei {loops} Berechnungen auf {n} Threads",
               "Berechnungsfehler unter Last: möglicher Hinweis auf CPU-/RAM-/Spannungsinstabilität.")
-    elif len(res) == n:
+    elif len(res) == n and loops == 0:
+        s.add(UNSUPPORTED, "Kein Worker hat eine ganze Verifikation abgeschlossen")
+    elif len(res) == n and not stop_evt.is_set():
         s.add(PASS, f"{loops} Berechnungen auf {n} Threads, 0 Abweichungen", f"{seconds}s Last")
     if stop_evt.is_set():
         s.add(INTERRUPTED, "Test vorzeitig beendet")
@@ -92,7 +98,29 @@ def cpu_test(seconds: int, stop_evt, threads: Optional[int] = None) -> Section:
 
 
 # ---------------------------------------------------------------- RAM
-def memory_test(mib: int, stop_evt) -> Section:
+def _memtester(mib: int, stop_evt, seconds: int) -> tuple:
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as out:
+        cmd = ["memtester", f"{mib}M", "1"]
+        try:
+            p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
+        except OSError as e:
+            return 127, str(e), False
+        deadline = time.monotonic() + seconds
+        while p.poll() is None and not stop_evt.is_set() and time.monotonic() < deadline:
+            stop_evt.wait(0.2)
+        limited = p.poll() is None
+        if limited:
+            p.terminate()
+            try:
+                p.wait(2)
+            except subprocess.TimeoutExpired:
+                p.kill()
+        rc = p.wait()
+        out.seek(0)
+        return rc, out.read()[-3000:], limited
+
+
+def memory_test(mib: int, stop_evt, load_seconds: Optional[int] = None) -> Section:
     s = Section("RAM Pattern-Verifikation")
     avail = 0
     for l in read("/proc/meminfo").splitlines():
@@ -112,19 +140,29 @@ def memory_test(mib: int, stop_evt) -> Section:
     bufs = []
     try:
         for i in range(n):
-            bufs.append(bytearray(random.Random(seed + i).randbytes(chunk)))
-        for pat in (b"\x00", b"\xff", b"\xaa", b"\x55"):        # stuck-bit patterns
-            for i, b in enumerate(bufs):
-                b[:] = pat * chunk
-            for b in bufs:
-                if b.count(pat) != chunk:
-                    errors += 1
             if stop_evt.is_set():
                 break
+            bufs.append(bytearray(random.Random(seed + i).randbytes(chunk)))
+        for pat in (b"\x00", b"\xff", b"\xaa", b"\x55"):        # stuck-bit patterns
+            if stop_evt.is_set():
+                break
+            for b in bufs:
+                if stop_evt.is_set():
+                    break
+                b[:] = pat * chunk
+            for b in bufs:
+                if stop_evt.is_set():
+                    break
+                if b.count(pat) != chunk:
+                    errors += 1
         for i, b in enumerate(bufs):                            # pseudo-random data
+            if stop_evt.is_set():
+                break
             b[:] = random.Random(seed + i).randbytes(chunk)
-        time.sleep(1)
+        stop_evt.wait(1)
         for i, b in enumerate(bufs):
+            if stop_evt.is_set():
+                break
             if bytes(b) != random.Random(seed + i).randbytes(chunk):
                 errors += 1
     except MemoryError:
@@ -134,15 +172,23 @@ def memory_test(mib: int, stop_evt) -> Section:
         bufs.clear()
     if errors:
         s.add(FAIL, f"{errors} Verifikationsfehler in {use} MiB", "Speicherinhalt stimmt nicht mit geschriebenen Daten überein.")
-    else:
+    elif not stop_evt.is_set():
         s.add(PASS, f"{use} MiB Pattern- und Zufallsdaten fehlerfrei verifiziert")
+    if stop_evt.is_set():
+        s.add(INTERRUPTED, "RAM-Prüfung vor dem vollständigen Mustervergleich beendet")
     if have("memtester") and is_root() and not stop_evt.is_set():
-        rc, out = run(["memtester", f"{min(use, 512)}M", "1"], timeout=900)
-        if "FAILURE" in out or rc not in (0,):
+        rc, out, limited = _memtester(min(use, 512), stop_evt, load_seconds or 900)
+        if "FAILURE:" in out or (0 < rc < 8 and rc & 6):
             s.add(FAIL, "memtester meldet Fehler", out.strip()[-300:])
+        elif limited:
+            s.add(INTERRUPTED if stop_evt.is_set() else SKIPPED, "memtester-Zusatzdurchlauf nicht vollständig",
+                  "Lastlimit oder Abbruch erreicht. Der interne RAM-Mustervergleich ist ein eigener Befund.")
+        elif rc:
+            s.add(UNSUPPORTED, f"memtester hat keine Verifikation abgeschlossen (Exit {rc})",
+                  out.strip()[-300:])
         else:
             s.add(PASS, "memtester (1 Durchlauf) fehlerfrei")
-    s.data = {"tested_mib": use, "errors": errors}
+    s.data = {"allocated_mib": use, "completed": not stop_evt.is_set(), "errors": errors}
     return s
 
 
@@ -192,20 +238,39 @@ def smart_test() -> List[Section]:
         s.add(UNSUPPORTED, "SMART benötigt root")
         return [s]
     out_secs = []
-    rc, out = run(["smartctl", "--scan", "-j"])
+    rc, out = run(["smartctl", "--scan", "-j"], stdout_only=True)
     try:
         devs = json.loads(out).get("devices", [])
     except ValueError:
         devs = []
     for d in devs:
-        rc, o = run(["smartctl", "-j", "-a", d["name"]], timeout=60)
-        try:
-            out_secs.append(parse_smart(json.loads(o)))
-        except ValueError:
-            s = Section(f"SMART {d['name']}")
-            s.add(UNSUPPORTED, "smartctl-Ausgabe nicht auswertbar")
-            out_secs.append(s)
-    return out_secs or [Section("SMART", UNSUPPORTED)]
+        cmd = ["smartctl", "-j", "-a", d["name"]]
+        attempts = [cmd]
+        if d.get("type") and d["type"] != "auto":
+            attempts.append(cmd + ["-d", d["type"]])
+        s = Section(f"SMART {d['name']}")
+        for args in attempts:
+            rc, o = run(args, timeout=20, stdout_only=True)
+            try:
+                data = json.loads(o)
+                if not isinstance(data, dict) or not isinstance(data.get("smart_status", {}).get("passed"), bool):
+                    continue
+                s = parse_smart(data)
+            except (AttributeError, ValueError):
+                continue
+            for f in s.findings:
+                f.source = " ".join(args)
+            break
+        if not s.findings:
+            s.add(UNSUPPORTED, f"Kein verwertbarer SMART-Status (Exit {rc})",
+                  source="; ".join(" ".join(args) for args in attempts))
+        out_secs.append(s)
+    if not out_secs:
+        s = Section("SMART")
+        s.add(UNSUPPORTED, "smartctl hat keine Geräte zur SMART-Abfrage gemeldet",
+              source="smartctl --scan -j")
+        out_secs.append(s)
+    return out_secs
 
 
 def write_verify_test(directory: str, mib: int, stop_evt) -> Section:
@@ -308,26 +373,48 @@ def read_temps() -> Dict[str, float]:
     return t
 
 
+def _temp_sensor(path: str) -> dict:
+    base, name = os.path.split(path)
+    if name.endswith("_input"):
+        driver = read(os.path.join(base, "name"))
+        label = read(path[:-len("input")] + "label")
+    else:
+        driver, label = read(os.path.join(base, "type")), ""
+    kind = "other"
+    tag = f"{driver} {label}".lower()
+    if re.search(r"amdgpu|nouveau|nvidia|i915|gpu[_ -]|\bxe\b", tag):
+        kind = "gpu"
+    elif re.search(r"coretemp|k10temp|x86_pkg_temp|cpu|package id|tdie|tctl", tag):
+        kind = "cpu"
+    elif re.search(r"nvme|drivetemp", tag):
+        kind = "storage"
+    return {"kind": kind, "name": " / ".join(filter(None, (driver, label))) or name, "source": path}
+
+
 class ThermalGuard(threading.Thread):
     def __init__(self, stop_evt):
         super().__init__(daemon=True)
         self.stop_evt, self.peak, self.aborted, self.warned = stop_evt, 0.0, False, False
-        self.available = bool(read_temps())
+        self.peaks = {}
         self._done = threading.Event()
+        self.sample(read_temps())
+
+    @property
+    def available(self):
+        return bool(self.peaks)
+
+    def sample(self, temps):
+        for path, temp in temps.items():
+            self.peaks[path] = max(self.peaks.get(path, 0), temp)
+        self.peak = max(self.peaks.values(), default=0)
+        self.warned = self.peak >= THERMAL_WARN_C
+        if self.peak >= THERMAL_ABORT_C:
+            self.aborted = True
+            self.stop_evt.set()
 
     def run(self):
-        while not self._done.wait(2):
-            temps = read_temps()
-            if not temps:
-                continue
-            m = max(temps.values())
-            self.peak = max(self.peak, m)
-            if m >= THERMAL_ABORT_C:
-                self.aborted = True
-                self.stop_evt.set()
-                return
-            if m >= THERMAL_WARN_C:
-                self.warned = True
+        while not self.aborted and not self._done.wait(1):
+            self.sample(read_temps())
 
     def finish(self):
         self._done.set()
@@ -338,12 +425,14 @@ HW_ERR = re.compile(r"(mce:|machine check|hardware error|edac.*(ce|ue|error)|aer
                     r"nvme.*(timeout|reset)|i/o error|ata\d+.*(exception|failed command)|thermal.*(critical|throttl))", re.I)
 
 
-def kernel_log_lines() -> List[str]:
+def kernel_log_lines() -> Optional[List[str]]:
     if have("journalctl"):
-        rc, out = run(["journalctl", "-k", "-b", "--no-pager", "-q", "-o", "short-monotonic"], timeout=60)
-    else:
-        rc, out = run(["dmesg"], timeout=60)
-    return out.splitlines() if rc == 0 else []
+        rc, out = run(["journalctl", "--system", "-k", "-b", "--no-pager", "-q", "-o", "short-monotonic"],
+                      timeout=12)
+        if rc == 0 and out.strip():
+            return out.splitlines()
+    rc, out = run(["dmesg"], timeout=12)
+    return out.splitlines() if rc == 0 and out.strip() else None
 
 
 def diff_hw_errors(before: List[str], after: List[str]) -> List[str]:
@@ -375,11 +464,19 @@ def check_previous_run() -> Optional[Section]:
         return None
     os.remove(_marker())
     s = Section("Vorheriger Lauf")
-    if m.get("boot_id") and m["boot_id"] != boot_id():
-        s.add(FAIL, f"SYSTEM_RESET: Rechner wurde während '{m.get('stage')}' neu gestartet/abgeschaltet",
-              "Ungeplanter Reset unter Last: typisch bei Netzteil-, Spannungs- oder Temperaturproblemen, "
-              "aber auch bei Kernel-Panics. Kein Beweis für eine bestimmte Komponente - Journal des "
-              "vorigen Boots prüfen: journalctl -b -1 -e")
+    current = boot_id()
+    if m.get("boot_id") and current and m["boot_id"] != current:
+        context = events.restart_context()
+        same_boot = context.data.get("previous_boot_id") == m["boot_id"]
+        fault = same_boot and context.status == FAIL
+        s.add(FAIL if fault else ATTENTION,
+              f"Bootwechsel nach offenem Testmarker ({m.get('stage')})",
+              "Der Marker belegt einen unterbrochenen Lauf, keinen ungeplanten Reset. "
+              + ("Das Journal desselben Boots enthält eine Kernel-Panic." if fault else
+                 "Geordnetes Herunterfahren oder ein unerwarteter Reset sind möglich."),
+              "pending_run.json; /proc/sys/kernel/random/boot_id")
+        if same_boot:
+            s.findings.extend(context.findings)
     else:
         s.add(ATTENTION, "Vorheriger Lauf wurde abgebrochen (gleicher Boot)", str(m.get("stage")))
     return s
@@ -401,32 +498,38 @@ def set_pending(stage: Optional[str]) -> None:
 # ---------------------------------------------------------------- orchestration
 def run_stability(profile: str = "quick", components: Optional[List[str]] = None,
                   directory: str = "", dry_run: bool = False, allow_download: bool = True,
-                  log: Callable[[str], None] = print) -> List[Section]:
-    cfg = PROFILES[profile]
+                  log: Callable[[str], None] = print, load_seconds: Optional[int] = None) -> List[Section]:
+    cfg = dict(PROFILES[profile])
+    if load_seconds:
+        for key in ("cpu_s", "gpu_s"):
+            cfg[key] = min(cfg[key], load_seconds)
     comps = components or COMPONENTS
     secs: List[Section] = []
-    prev = check_previous_run()
-    if prev:
-        secs.append(prev)
     if dry_run:
         s = Section("DryRun")
         s.add(PASS, f"Profil {profile}: {', '.join(comps)}", json.dumps(cfg))
         s.add(PASS, "Keine Last erzeugt, keine Dateien geschrieben")
         return secs + [s]
+    prev = check_previous_run()
+    if prev:
+        secs.append(prev)
 
     stop_evt = threading.Event()
     old = signal.signal(signal.SIGINT, lambda *_: stop_evt.set())
     guard = ThermalGuard(stop_evt)
     guard.start()
-    before = kernel_log_lines()
+    before = kernel_log_lines() if "kernel" in comps else None
     inv = Section("Voraussetzungen")
-    inv.add(PASS if is_root() else ATTENTION, "root" if is_root() else "Ohne root: SMART und Roh-Lesetest entfallen")
+    if "storage" in comps and not is_root():
+        inv.add(ATTENTION, "Ohne root: SMART und Roh-Lesetest entfallen")
+    else:
+        inv.add(PASS, "Mit Root-Rechten" if is_root() else "Mit Benutzerrechten")
     inv.add(PASS if guard.available else ATTENTION,
             "Temperatursensoren gefunden" if guard.available else "Keine Temperatursensoren - Thermal-Guard inaktiv")
     if not os.path.isdir("/var/log/journal"):
-        inv.add(ATTENTION, "systemd-Journal ist nicht persistent",
-                "Nach einem Reset fehlt das Log des Vor-Boots. Aktivieren: sudo mkdir -p /var/log/journal && "
-                "sudo systemctl restart systemd-journald")
+        inv.add(ATTENTION, "Kein persistentes Standard-Journalverzeichnis gefunden",
+                "Bei einem Reset kann das Journal des vorigen Boots fehlen.",
+                "/var/log/journal")
     secs.append(inv)
     try:
         if "cpu" in comps and not stop_evt.is_set():
@@ -434,7 +537,7 @@ def run_stability(profile: str = "quick", components: Optional[List[str]] = None
             secs.append(cpu_test(cfg["cpu_s"], stop_evt))
         if "memory" in comps and not stop_evt.is_set():
             log("RAM-Test ..."); set_pending("RAM")
-            secs.append(memory_test(cfg["ram_mib"], stop_evt))
+            secs.append(memory_test(cfg["ram_mib"], stop_evt, load_seconds))
         if "gpu" in comps and not stop_evt.is_set():
             log("GPU-/VRAM-Test ..."); set_pending("GPU")
             secs.append(gpu_mod.gpu_test(cfg["gpu_s"], stop_evt, allow_download, log))
@@ -455,10 +558,22 @@ def run_stability(profile: str = "quick", components: Optional[List[str]] = None
                 x = Section("Oberflächen-Lesetest"); x.add(SKIPPED, f"Im Profil {profile} nicht enthalten"); secs.append(x)
     finally:
         guard.finish()
+        guard.join(2)
         set_pending(None)
         signal.signal(signal.SIGINT, old)
 
-    th = Section("Thermal Guard")
+    th = Section("Temperaturüberwachung", expanded=True)
+    th.data["sensors"] = [{**_temp_sensor(path), "peak_c": round(peak, 1)}
+                          for path, peak in sorted(guard.peaks.items())]
+    for kind, label in (("cpu", "CPU"), ("gpu", "GPU")):
+        candidates = [r for r in th.data["sensors"] if r["kind"] == kind]
+        if candidates:
+            peak = max(candidates, key=lambda r: r["peak_c"])
+            th.add(PASS, f"{label}: bis {peak['peak_c']:g} °C", peak["name"], peak["source"])
+        else:
+            th.add(UNSUPPORTED, f"{label}: kein zuordenbarer Temperatursensor",
+                   "Für diese Komponente ist kein temperaturbasierter Grenzwert nachweisbar.",
+                   "hwmon / thermal_zone")
     if not guard.available:
         th.add(UNSUPPORTED, "Keine Sensoren verfügbar")
     elif guard.aborted:
@@ -469,12 +584,18 @@ def run_stability(profile: str = "quick", components: Optional[List[str]] = None
 
     if "kernel" in comps:
         k = Section("Kernel-/Hardware-Fehler während des Tests")
-        new = diff_hw_errors(before, kernel_log_lines())
-        if new:
+        after = kernel_log_lines()
+        new = diff_hw_errors(before, after) if before is not None and after is not None else []
+        if before is None or after is None:
+            k.add(UNSUPPORTED, "Kernel-Log nicht vor und nach der Last lesbar",
+                  "Keine belastbare Aussage zu neuen Hardware-Meldungen.",
+                  "journalctl --system -k -b; dmesg")
+        elif new:
             k.add(FAIL, f"{len(new)} neue Hardware-Fehlermeldungen (MCE/EDAC/AER/GPU/NVMe)", "\n".join(new[:10]))
             k.raw = "\n".join(new[:200])
         else:
-            k.add(PASS, "Keine neuen Hardware-Fehlermeldungen im Kernel-Log")
+            k.add(PASS, "Keine neuen bekannten Hardware-Fehlermuster im Kernel-Log",
+                  source="journalctl --system -k -b; dmesg")
         secs.append(k)
     if stop_evt.is_set() and not guard.aborted:
         i = Section("Abbruch"); i.add(INTERRUPTED, "Durch Benutzer abgebrochen - Ergebnis unvollständig"); secs.append(i)
